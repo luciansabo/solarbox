@@ -1,0 +1,28 @@
+// --------------------------------------------------------
+// config
+// --------------------------------------------------------
+// You should get Auth Token in the Blynk App.
+// Go to the Project Settings (nut icon).
+char auth[] = "";
+
+// Your WiFi credentials.
+// Set password to "" for open networks.
+char ssid[] = "";
+char pass[] = "";
+
+IPAddress ip(192, 168, 1, 101);
+IPAddress dns(8, 8, 8, 8);
+IPAddress gateway(192, 168, 1, 1);
+IPAddress subnet(255, 255, 255, 0);
+unsigned char bssid[10] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+byte channel = 3;
+
+// wifi timeout is reconnect tries * delay
+const byte WIFI_RECONNECT_TRIES = 120;
+const byte WIFI_RECONNECT_DELAY = 50;  // milliseconds
+
+const char* COLOR_GREEN = "#00cc00";
+const char* COLOR_BLUE = "#0e7aaf";
+const char* COLOR_YELLOW = "#ffff33";
+const char* COLOR_ORANGE = "#ffd11a";
+const char* COLOR_RED = "#ff3300";
