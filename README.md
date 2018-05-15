@@ -6,6 +6,7 @@
 ### Components used:
 - Sparkfun ESP8266 Thing (https://www.sparkfun.com/products/13804)
 - I2C Humidity and temperature sensor: Si7021 (https://www.sparkfun.com/products/13763)
+- Analog/Digital Soil moisture sensor such as FC-28
 - voltage divider for measuring battery voltage
 
 ### How to use
@@ -19,3 +20,9 @@
 5. Compile and update the firmware
 6. Add a jumper to allow deep sleep
    Connects GPIO16 (XPD) to the RST pin. (info can be found in ESP8266 manual)
+
+### Connections
+
+- Si7021 connected by I2C pins
+- GPIO pin 13 connected to soil moisture sensor VCC. This powers up and shuts down the sensor before and after readings 
+- voltage reduced by voltage divider goes to ADC pin (should be betwen 0-1 volts)
