@@ -26,7 +26,6 @@
   in the Tools -> Board menu!
 
   Change WiFi ssid, pass, and Blynk auth token to run :)
-  Feel free to apply it to any other example. It's simple!
  *************************************************************/
 
 /* Comment this out to disable prints and save space */
@@ -40,11 +39,16 @@
 #include "Config.h"
 
 // --------------------------------------------------------
+// PINS
+const int soilSensorPin = 4;
+const int soilSensorPower = 13;
+// --------------------------------------------------------
 
 float humidity;
 float temp;
 float voltage = 0;
 byte chargeLevel = 0;
+bool isSoilDry = true;
 
 enum statuses {
   STATUS_OK,
@@ -54,6 +58,7 @@ enum statuses {
 } envStatus;
 
 enum batteryStatuses {
+  STATUS_DISCONNECTED,
   STATUS_DISCHARGED,
   STATUS_CHARGED,
   STATUS_FLOAT,
@@ -69,6 +74,7 @@ char statusText[100], batteryStatusText[100];
 
 WidgetLED ledWeather(V2);
 WidgetLED ledBattery(V5);
+WidgetLED ledSoil(V8);
 
 //Create Instance of SI7021 temp and humidity sensor
 Weather sensor;
@@ -84,13 +90,17 @@ void setup()
 
   //Initialize the I2C sensors and ping them
   sensor.begin();
+  pinMode(soilSensorPin, INPUT);
+  pinMode(soilSensorPower, OUTPUT);
   yield();
+
+  // read sensors
   readPreviousParameters();
   readWeather();
   readVoltage();
-  calculateParams();
 
   if (networkSetup()) {
+    calculateParams();
     sendAlerts();
     logToBlynk();
     Blynk.disconnect();
@@ -127,15 +137,18 @@ void readPreviousParameters()
  */
 bool networkSetup()
 {
-  unsigned long t0 = millis();
+  onBeforeWifiSetup();
+  
   // Disable the WiFi persistence.  The ESP8266 will not load and save WiFi settings in the flash memory.
   WiFi.persistent( false );
   WiFi.forceSleepWake();
   WiFi.mode(WIFI_STA);
   delay(1);
+  
   // Bring up the WiFi connection
   WiFi.config(ip, gateway, subnet, dns);
   WiFi.begin(ssid, pass, channel, bssid);
+  //WiFi.begin(ssid, pass);
   yield();
   
   int counter = 0;
@@ -150,6 +163,8 @@ bool networkSetup()
     return false;
   }
 
+  onFinishWifiSetup();
+ 
   //Serial.printf("Connected to %s in %d ms\n", ssid, wifiTime);
 
   Blynk.config(auth);  // in place of Blynk.begin(auth, ssid, pass);
@@ -158,6 +173,17 @@ bool networkSetup()
   //Serial.printf("Connected to Blynk in %d ms\n", blynkTime);
 
   return true;
+}
+
+void onFinishWifiSetup()
+{
+  readSoilMoisture();
+}
+
+void onBeforeWifiSetup()
+{
+  // power up slow sensors
+  digitalWrite(soilSensorPower, HIGH);
 }
 
 //--------------------------------------------------------------
@@ -172,12 +198,15 @@ void calculateParams()
   strcpy(statusText, " ");
   envStatus = STATUS_OK;
 
-  if (humidity > 96) { // solar controller operates at maximum 96% humidity
+  if (humidity > 98) { // solar controller operates at maximum 96% humidity
     strcpy(statusText, "EXCES UMIDITATE."); // excessive humidity
     envStatus = STATUS_DANGER;
-  } else if (humidity > 85) {
+  } else if (humidity > 94) {
     envStatus = STATUS_WARNING;
     strcpy(statusText, "Avert. Umiditate."); // humidity warning
+  } else if (humidity > 85) {
+    envStatus = STATUS_NOTICE;
+    strcpy(statusText, "Umiditate crescuta."); // humidity warning
   }
 
   // battery charge 0 - 40
@@ -211,21 +240,29 @@ void calculateParams()
     strcat(statusText, " Temp. ridicata."); // high temp
   }
 
+  // soil
+  if (isSoilDry && envStatus < STATUS_DANGER) {
+    envStatus = STATUS_WARNING;
+    strcat(statusText, " Sol uscat."); // dry soil
+  }
+
+  float compensatedVoltage = (temp - 25) * 0.03;
+
   // battery voltage status
   if (voltage > 15.55) {
       batteryStatus = STATUS_OVERVOLTAGE;
       strcpy(batteryStatusText, "Supra-tensiune");
       strcat(statusText, " SUPRA-TENSIUNE BATERIE."); // over-voltage
-  } else if (voltage > 14.52) {
+  } else if (voltage > 14.52 - compensatedVoltage) {
       batteryStatus = STATUS_EQUALIZE;
       strcpy(batteryStatusText, "Incarcare Egalizare");
-  } else if (voltage > 14.3) {
+  } else if (voltage > 14.3 - compensatedVoltage) {
       batteryStatus = STATUS_BOOST;
       strcpy(batteryStatusText, "Incarcare Boost");
-  } else if (voltage > 13.7) {
+  } else if (voltage > 13.7 - compensatedVoltage) {
       batteryStatus = STATUS_FLOAT;
       strcpy(batteryStatusText, "Incarcare Float");
-  } else if (voltage > 13.2) {
+  } else if (voltage > 13.2 - compensatedVoltage) {
       batteryStatus = STATUS_BULK;
       strcpy(batteryStatusText, "Incarcare Bulk");
   } else if (voltage > 11.9) {
@@ -237,10 +274,15 @@ void calculateParams()
       }
       sprintf(batteryStatusText, "Se descarca. %d %", round(capacity));
       batteryStatus = STATUS_CHARGED;
-  } else {
+  } else if (voltage > 0.2) {
       batteryStatus = STATUS_DISCHARGED;
-      strcat(statusText, " BATERIE DESCARCATA."); // discharged
+      strcat(statusText, " BATERIE DESCARCATA."); // disconnected
       strcpy(batteryStatusText, "Sub-tensiune");
+  } else {
+      voltage = 0;
+      batteryStatus = STATUS_DISCONNECTED;
+      strcat(statusText, " BATERIE DECONECTATA."); // discharged
+      strcpy(batteryStatusText, "Deconectat");
   }
 
   chargeLevel = getSoc(voltage, temp);
@@ -293,6 +335,13 @@ void readWeather()
   }
 }
 
+ void readSoilMoisture()
+ {
+  isSoilDry = (digitalRead(soilSensorPin) == HIGH);
+  // disable sensor
+  digitalWrite(soilSensorPower, LOW);
+ }
+
 /**
  * Read volage using ADC pin on Sparkfun 8266 Thing
  * Analog reading goes from 0 - 1023. ADC voltage range is 0 - 1V
@@ -301,7 +350,7 @@ void readWeather()
  {
   // read the input on analog pin 0:
   int adcValue = analogRead(A0);
-  voltage = adcValue * 0.018516157;
+  voltage = adcValue * 0.01848;
  }
 
 /**
@@ -310,6 +359,7 @@ void readWeather()
 void sendAlerts()
 {
   unsigned short addr = 0;
+  bool hasAlert = false;
 
   // no notification if the state is not changed
   if (prevEnvStatus == envStatus && batteryStatus == prevBatteryStatus) {
@@ -317,7 +367,15 @@ void sendAlerts()
   }
   
   // todo: send this alert only once if conditions go away but not more than 10 times a day
-  if (envStatus == STATUS_DANGER  || batteryStatus == STATUS_DISCHARGED || batteryStatus == STATUS_OVERVOLTAGE) {
+  if (prevEnvStatus != envStatus && envStatus == STATUS_DANGER) {
+    hasAlert = true;
+  }
+
+  if (batteryStatus != prevBatteryStatus && (batteryStatus == STATUS_DISCHARGED || batteryStatus == STATUS_OVERVOLTAGE || batteryStatus == STATUS_DISCONNECTED)) {
+   hasAlert = true;
+  }
+  
+  if (hasAlert) {
     Blynk.email("SolarBox Alert", statusText);
     char buff[50];
     sprintf(buff, "SolarBox Alert: %s", statusText);
@@ -351,6 +409,7 @@ void sendAlerts()
  * - V5 - LED widget for battery status
  * - V6 - `char` battery status text
  * - V7 - `byte` battery charge level
+ * - V8 - `bool` soil is dry
  */
 void logToBlynk()
 {
@@ -375,6 +434,9 @@ void logToBlynk()
   ledWeather.on();
 
   switch (batteryStatus) {
+    case STATUS_DISCONNECTED:
+      ledBattery.off();
+      break;
     case STATUS_OVERVOLTAGE:
     case STATUS_DISCHARGED:
       ledBattery.setColor(COLOR_RED);
@@ -392,7 +454,17 @@ void logToBlynk()
       ledBattery.setColor(COLOR_GREEN);
       
   }
-  ledBattery.on();
+
+  if (isSoilDry) {
+    ledSoil.setColor(COLOR_ORANGE);
+  } else {
+    ledSoil.setColor(COLOR_BLUE);
+  }
+
+  if (batteryStatus != STATUS_DISCONNECTED) {
+    ledBattery.on();
+  }
+  ledSoil.on();
   
   Blynk.virtualWrite(3, statusText);
   Blynk.virtualWrite(4, voltage);
