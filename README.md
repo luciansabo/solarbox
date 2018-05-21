@@ -8,7 +8,7 @@
 - I2C Humidity and temperature sensor: Si7021 (https://www.sparkfun.com/products/13763)
 - Analog/Digital Soil moisture sensor such as FC-28
 - voltage divider for measuring battery voltage
-[[https://preview.ibb.co/fXzdFo/voltage_divider.png]]
+![voltage divider][https://preview.ibb.co/fXzdFo/voltage_divider.png)
 
 ### How to use
 
