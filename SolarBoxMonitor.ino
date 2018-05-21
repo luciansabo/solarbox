@@ -49,6 +49,7 @@ float temp;
 float voltage = 0;
 byte chargeLevel = 0;
 bool isSoilDry = true;
+bool isDayTime;
 
 enum statuses {
   STATUS_OK,
@@ -100,7 +101,6 @@ void setup()
   readVoltage();
 
   if (networkSetup()) {
-    calculateParams();
     sendAlerts();
     logToBlynk();
     Blynk.disconnect();
@@ -177,13 +177,23 @@ bool networkSetup()
 
 void onFinishWifiSetup()
 {
-  readSoilMoisture();
+  if (isDayTime) {
+    // soil
+    readSoilMoisture();
+    if (isSoilDry && envStatus < STATUS_DANGER) {
+      envStatus = STATUS_WARNING;
+      strcat(statusText, " Sol uscat."); // dry soil
+    }
+  }
 }
 
 void onBeforeWifiSetup()
 {
+  calculateParams();
   // power up slow sensors
-  digitalWrite(soilSensorPower, HIGH);
+  if (isDayTime) {
+    digitalWrite(soilSensorPower, HIGH);
+  }
 }
 
 //--------------------------------------------------------------
@@ -240,15 +250,10 @@ void calculateParams()
     strcat(statusText, " Temp. ridicata."); // high temp
   }
 
-  // soil
-  if (isSoilDry && envStatus < STATUS_DANGER) {
-    envStatus = STATUS_WARNING;
-    strcat(statusText, " Sol uscat."); // dry soil
-  }
-
   float compensatedVoltage = (temp - 25) * 0.03;
 
   // battery voltage status
+  strcpy(batteryStatusText, "");
   if (voltage > 15.55) {
       batteryStatus = STATUS_OVERVOLTAGE;
       strcpy(batteryStatusText, "Supra-tensiune");
@@ -274,7 +279,7 @@ void calculateParams()
       }
       sprintf(batteryStatusText, "Se descarca. %d %", round(capacity));
       batteryStatus = STATUS_CHARGED;
-  } else if (voltage > 0.2) {
+  } else if (voltage > 0.3) {
       batteryStatus = STATUS_DISCHARGED;
       strcat(statusText, " BATERIE DESCARCATA."); // disconnected
       strcpy(batteryStatusText, "Sub-tensiune");
@@ -286,6 +291,7 @@ void calculateParams()
   }
 
   chargeLevel = getSoc(voltage, temp);
+  isDayTime = voltage == 0 || voltage > 13;
 }
 
 /**
@@ -350,7 +356,7 @@ void readWeather()
  {
   // read the input on analog pin 0:
   int adcValue = analogRead(A0);
-  voltage = adcValue * 0.01848;
+  voltage = adcValue * 0.017;
  }
 
 /**
@@ -435,7 +441,7 @@ void logToBlynk()
 
   switch (batteryStatus) {
     case STATUS_DISCONNECTED:
-      ledBattery.off();
+      ledBattery.setColor(COLOR_GREY);
       break;
     case STATUS_OVERVOLTAGE:
     case STATUS_DISCHARGED:
@@ -455,16 +461,18 @@ void logToBlynk()
       
   }
 
-  if (isSoilDry) {
-    ledSoil.setColor(COLOR_ORANGE);
+  if (isDayTime) {
+    if (isSoilDry) {
+      ledSoil.setColor(COLOR_ORANGE);
+    } else {
+      ledSoil.setColor(COLOR_BLUE);
+    }
   } else {
-    ledSoil.setColor(COLOR_BLUE);
+    ledSoil.setColor(COLOR_GREY);
   }
 
-  if (batteryStatus != STATUS_DISCONNECTED) {
-    ledBattery.on();
-  }
   ledSoil.on();
+  ledBattery.on();
   
   Blynk.virtualWrite(3, statusText);
   Blynk.virtualWrite(4, voltage);
