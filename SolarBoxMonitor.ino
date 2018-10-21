@@ -143,7 +143,7 @@ bool networkSetup()
   WiFi.persistent( false );
   WiFi.forceSleepWake();
   WiFi.mode(WIFI_STA);
-  delay(1);
+  yield();
   
   // Bring up the WiFi connection
   WiFi.config(ip, gateway, subnet, dns);
@@ -168,7 +168,16 @@ bool networkSetup()
   //Serial.printf("Connected to %s in %d ms\n", ssid, wifiTime);
 
   Blynk.config(auth);  // in place of Blynk.begin(auth, ssid, pass);
-  while (!Blynk.connect());
+  unsigned long startConnecting = millis(); 
+
+  while(!Blynk.connected()) {
+    Blynk.connect();  
+    if (millis() > startConnecting + BLYNK_SERVER_TIMEOUT) {
+      Serial.println("Timeout connecting to Blynk server.");
+      return false;
+    }
+    delay(BLYNK_RECONNECT_DELAY);
+  }
 
   //Serial.printf("Connected to Blynk in %d ms\n", blynkTime);
 
