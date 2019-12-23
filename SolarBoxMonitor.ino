@@ -39,10 +39,6 @@
 #include "Config.h"
 
 // --------------------------------------------------------
-// PINS
-const int soilSensorPin = 4;
-const int soilSensorPower = 13;
-// --------------------------------------------------------
 
 float humidity;
 float temp;
@@ -51,14 +47,16 @@ byte chargeLevel = 0;
 bool isSoilDry = true;
 bool isDayTime;
 
-enum statuses {
+enum statuses
+{
   STATUS_OK,
   STATUS_NOTICE,
   STATUS_WARNING,
   STATUS_DANGER
 } envStatus;
 
-enum batteryStatuses {
+enum batteryStatuses
+{
   STATUS_DISCONNECTED,
   STATUS_DISCHARGED,
   STATUS_CHARGED,
@@ -81,40 +79,64 @@ WidgetLED ledSoil(V8);
 Weather sensor;
 
 //--------------------------------------------------------------
+#define BUILTIN_LED 5
 
 void setup()
 {
-  WiFi.mode(WIFI_OFF);
-  WiFi.forceSleepBegin();
   // Debug console
   Serial.begin(9600);
 
-  //Initialize the I2C sensors and ping them
-  sensor.begin();
-  pinMode(soilSensorPin, INPUT);
-  pinMode(soilSensorPower, OUTPUT);
-  yield();
+  // disable WiFi to prevent interferences when reading sensors
+  WiFi.mode( WIFI_OFF );
+  WiFi.forceSleepBegin();
 
   // read sensors
-  readPreviousParameters();
-  readWeather();
   readVoltage();
+  sensor.begin();
+  readWeather();
 
-  if (networkSetup()) {
-    sendAlerts();
+  // connect to wifi
+  networkSetup();
+
+  // read soil sensor
+  pinMode(SOIL_SENSOR_INPUT_PIN, INPUT);
+  pinMode(SOIL_SENSOR_POWER, OUTPUT);
+
+  // prepare data
+  readPreviousParameters();
+  calculateParams();
+
+  // soil moisture
+  if (isDayTime)
+  {
+    // soil
+    readSoilMoisture();
+    if (isSoilDry && envStatus < STATUS_DANGER)
+    {
+      envStatus = STATUS_WARNING;
+      strcat(statusText, " Sol uscat."); // dry soil
+    }
+  }
+
+  // wait until wifi connects or timeout
+  waitForWifiConnection();
+
+  if (WiFi.status() == WL_CONNECTED)
+  {
     logToBlynk();
-    Blynk.disconnect();
+    sendAlerts();
   }
 
   goToSleep();
-  //debugInfo();
+  
 }
 
 //--------------------------------------------------------------
 
 void loop()
 {
-
+  // no need to run Blynk because we only run the setup function
+  //Blynk.run();
 }
 
 /**
@@ -137,72 +159,47 @@ void readPreviousParameters()
  */
 bool networkSetup()
 {
-  onBeforeWifiSetup();
-  
   // Disable the WiFi persistence.  The ESP8266 will not load and save WiFi settings in the flash memory.
-  WiFi.persistent( false );
+  WiFi.persistent(false);
   WiFi.forceSleepWake();
   WiFi.mode(WIFI_STA);
-  yield();
-  
   // Bring up the WiFi connection
   WiFi.config(ip, gateway, subnet, dns);
-  WiFi.begin(ssid, pass, channel, bssid);
-  //WiFi.begin(ssid, pass);
-  yield();
-  
-  int counter = 0;
-  while (WiFi.status() != WL_CONNECTED && (counter <= WIFI_RECONNECT_TRIES)) {
-    delay(WIFI_RECONNECT_DELAY);
+  //WiFi.begin(ssid, pass, channel, bssid);
+  WiFi.begin(ssid, pass);
+}
+
+bool waitForWifiConnection()
+{
+  int startMillis = millis();
+
+  while (WiFi.status() != WL_CONNECTED)
+  {
     Serial.print(".");
-    counter++;
+    delay(WIFI_WAIT_DELAY);
+    if ((millis() - startMillis) > WIFI_CONNECTION_TIMEOUT)
+    {
+      Serial.println("wifiSetup(): Wifi connection timeout.");
+      break;
+    }
   }
-  
-  if (WiFi.status() != WL_CONNECTED) {
+
+  Serial.println("");
+
+  if (WiFi.status() != WL_CONNECTED)
+  {
     Serial.printf("Could not connect to %s\n", ssid);
     return false;
   }
 
-  onFinishWifiSetup();
- 
   //Serial.printf("Connected to %s in %d ms\n", ssid, wifiTime);
 
-  Blynk.config(auth);  // in place of Blynk.begin(auth, ssid, pass);
-  unsigned long startConnecting = millis(); 
-
-  while(!Blynk.connected()) {
-    Blynk.connect();  
-    if (millis() > startConnecting + BLYNK_SERVER_TIMEOUT) {
-      Serial.println("Timeout connecting to Blynk server.");
-      return false;
-    }
-    delay(BLYNK_RECONNECT_DELAY);
-  }
+  Blynk.config(BLYNK_TOKEN); // in place of Blynk.begin(auth, ssid, pass);
+  Blynk.connect(BLYNK_SERVER_TIMEOUT);
 
   //Serial.printf("Connected to Blynk in %d ms\n", blynkTime);
 
   return true;
-}
-
-void onFinishWifiSetup()
-{
-  if (isDayTime) {
-    // soil
-    readSoilMoisture();
-    if (isSoilDry && envStatus < STATUS_DANGER) {
-      envStatus = STATUS_WARNING;
-      strcat(statusText, " Sol uscat."); // dry soil
-    }
-  }
-}
-
-void onBeforeWifiSetup()
-{
-  calculateParams();
-  // power up slow sensors
-  if (isDayTime) {
-    digitalWrite(soilSensorPower, HIGH);
-  }
 }
 
 //--------------------------------------------------------------
@@ -217,13 +214,18 @@ void calculateParams()
   strcpy(statusText, " ");
   envStatus = STATUS_OK;
 
-  if (humidity > 98) { // solar controller operates at maximum 96% humidity
+  if (humidity > 98)
+  {                                         // solar controller operates at maximum 96% humidity
     strcpy(statusText, "EXCES UMIDITATE."); // excessive humidity
     envStatus = STATUS_DANGER;
-  } else if (humidity > 94) {
+  }
+  else if (humidity > 94)
+  {
     envStatus = STATUS_WARNING;
     strcpy(statusText, "Avert. Umiditate."); // humidity warning
-  } else if (humidity > 85) {
+  }
+  else if (humidity > 85)
+  {
     envStatus = STATUS_NOTICE;
     strcpy(statusText, "Umiditate crescuta."); // humidity warning
   }
@@ -231,29 +233,44 @@ void calculateParams()
   // battery charge 0 - 40
   // Discharge: -15 ~ 50°C
   // 40°C 103%, 25°C 100%, 0°C 86%
-  if (temp < -25) {
+  if (temp < -25)
+  {
     envStatus = STATUS_DANGER;
     strcat(statusText, " INGHET.");
-  } else if (temp < 0) {
-    if (envStatus < STATUS_DANGER) {
+  }
+  else if (temp < 0)
+  {
+    if (envStatus < STATUS_DANGER)
+    {
       envStatus = STATUS_WARNING;
     }
     strcat(statusText, " Risc inghet."); // low temp, freezing
-  } else if (temp < 10) {
-    if (envStatus < STATUS_WARNING) {
+  }
+  else if (temp < 10)
+  {
+    if (envStatus < STATUS_WARNING)
+    {
       envStatus = STATUS_NOTICE;
     }
     strcat(statusText, " Temp. scazuta."); // low temp notice
-  } else if (temp > 60) {
+  }
+  else if (temp > 60)
+  {
     envStatus = STATUS_DANGER;
     strcat(statusText, " INCENDIU."); // possible fire
-  } else if (temp > 50) {
-    if (envStatus < STATUS_DANGER) {
+  }
+  else if (temp > 50)
+  {
+    if (envStatus < STATUS_DANGER)
+    {
       envStatus = STATUS_WARNING;
     }
     strcat(statusText, " Temp. f. ridicata."); // very high temp
-  } else if (temp > 37) {
-    if (envStatus < STATUS_WARNING) {
+  }
+  else if (temp > 37)
+  {
+    if (envStatus < STATUS_WARNING)
+    {
       envStatus = STATUS_NOTICE;
     }
     strcat(statusText, " Temp. ridicata."); // high temp
@@ -263,40 +280,58 @@ void calculateParams()
 
   // battery voltage status
   strcpy(batteryStatusText, "");
-  if (voltage > 15.55) {
-      batteryStatus = STATUS_OVERVOLTAGE;
-      strcpy(batteryStatusText, "Supra-tensiune");
-      strcat(statusText, " SUPRA-TENSIUNE BATERIE."); // over-voltage
-  } else if (voltage > 14.52 - compensatedVoltage) {
-      batteryStatus = STATUS_EQUALIZE;
-      strcpy(batteryStatusText, "Incarcare Egalizare");
-  } else if (voltage > 14.3 - compensatedVoltage) {
-      batteryStatus = STATUS_BOOST;
-      strcpy(batteryStatusText, "Incarcare Boost");
-  } else if (voltage > 13.7 - compensatedVoltage) {
-      batteryStatus = STATUS_FLOAT;
-      strcpy(batteryStatusText, "Incarcare Float");
-  } else if (voltage > 13.2 - compensatedVoltage) {
-      batteryStatus = STATUS_BULK;
-      strcpy(batteryStatusText, "Incarcare Bulk");
-  } else if (voltage > 11.9) {
-      byte capacity = 100;
-      if (temp > 25) {
-        capacity += (temp - 25) * 0.2;
-      } else {
-        capacity -= (25 - temp) * 0.55;
-      }
-      sprintf(batteryStatusText, "Se descarca. %d %", round(capacity));
-      batteryStatus = STATUS_CHARGED;
-  } else if (voltage > 0.3) {
-      batteryStatus = STATUS_DISCHARGED;
-      strcat(statusText, " BATERIE DESCARCATA."); // disconnected
-      strcpy(batteryStatusText, "Sub-tensiune");
-  } else {
-      voltage = 0;
-      batteryStatus = STATUS_DISCONNECTED;
-      strcat(statusText, " BATERIE DECONECTATA."); // discharged
-      strcpy(batteryStatusText, "Deconectat");
+  if (voltage > 15.55)
+  {
+    batteryStatus = STATUS_OVERVOLTAGE;
+    strcpy(batteryStatusText, "Supra-tensiune");
+    strcat(statusText, " SUPRA-TENSIUNE BATERIE."); // over-voltage
+  }
+  else if (voltage > 14.52 - compensatedVoltage)
+  {
+    batteryStatus = STATUS_EQUALIZE;
+    strcpy(batteryStatusText, "Incarcare Egalizare");
+  }
+  else if (voltage > 14.3 - compensatedVoltage)
+  {
+    batteryStatus = STATUS_BOOST;
+    strcpy(batteryStatusText, "Incarcare Boost");
+  }
+  else if (voltage > 13.7 - compensatedVoltage)
+  {
+    batteryStatus = STATUS_FLOAT;
+    strcpy(batteryStatusText, "Incarcare Float");
+  }
+  else if (voltage > 13.2 - compensatedVoltage)
+  {
+    batteryStatus = STATUS_BULK;
+    strcpy(batteryStatusText, "Incarcare Bulk");
+  }
+  else if (voltage > 11.9)
+  {
+    byte capacity = 100;
+    if (temp > 25)
+    {
+      capacity += (temp - 25) * 0.2;
+    }
+    else
+    {
+      capacity -= (25 - temp) * 0.55;
+    }
+    sprintf(batteryStatusText, "Se descarca. %d %", round(capacity));
+    batteryStatus = STATUS_CHARGED;
+  }
+  else if (voltage > 3)
+  {
+    batteryStatus = STATUS_DISCHARGED;
+    strcat(statusText, " BATERIE DESCARCATA."); // disconnected
+    strcpy(batteryStatusText, "Sub-tensiune");
+  }
+  else
+  {
+    voltage = 0;
+    batteryStatus = STATUS_DISCONNECTED;
+    strcat(statusText, " BATERIE DECONECTATA."); // discharged
+    strcpy(batteryStatusText, "Deconectat");
   }
 
   chargeLevel = getSoc(voltage, temp);
@@ -312,15 +347,20 @@ byte getSoc(float voltage, float temp)
   float diff;
   int i;
 
-  if (temp > 27) {
+  if (temp > 27)
+  {
     voltage += diff / 7.0 * 0.005;
-  } else {
+  }
+  else
+  {
     diff = 27 - temp;
     voltage -= (diff / 7.0 * 0.005) + (diff * 0.001);
   }
 
-  for (i = 0; i <= 10; i++) {
-    if (voltage <= voltageMap[i]) {
+  for (i = 0; i <= 10; i++)
+  {
+    if (voltage <= voltageMap[i])
+    {
       return i * 10;
     }
   }
@@ -336,7 +376,8 @@ void readWeather()
 {
   humidity = sensor.getRH();
   // unconnected sensor give -6
-  if (humidity < 0) {
+  if (humidity < 0)
+  {
     humidity = NULL;
   }
 
@@ -345,28 +386,51 @@ void readWeather()
   // measurement with getTemp() instead with readTemp()
   temp = sensor.getTemp();
 
-  if (temp < -45) {
+  if (temp < -45)
+  {
     temp = NULL;
   }
 }
 
- void readSoilMoisture()
- {
-  isSoilDry = (digitalRead(soilSensorPin) == HIGH);
+void readSoilMoisture()
+{
+  isSoilDry = (digitalRead(SOIL_SENSOR_INPUT_PIN) == HIGH);
   // disable sensor
-  digitalWrite(soilSensorPower, LOW);
- }
+  digitalWrite(SOIL_SENSOR_POWER, LOW);
+}
 
 /**
- * Read volage using ADC pin on Sparkfun 8266 Thing
- * Analog reading goes from 0 - 1023. ADC voltage range is 0 - 1V
+ * Read voltage using ADC pin on Sparkfun 8266 Thing
+ * Uses an average over 10 samples
+ * 
  */
- void readVoltage()
- {
+void readVoltage()
+{
   // read the input on analog pin 0:
-  int adcValue = analogRead(A0);
-  voltage = adcValue * 0.017;
- }
+  int adcValue = 0;
+  const uint8_t numberOfSamples = 10;
+
+  // discard first reading
+  analogRead(A0);
+
+  // Get sensor samples with delay and calculate the sum.
+  for (int i = 0; i < numberOfSamples; i++)
+  {
+    // Add sample to the sum counter.
+    // Analog reading goes from 0 - 1023. ADC voltage range is 0 - 1V
+    adcValue += analogRead(A0);
+
+    // Delay for 5ms. entire operation takes 50ms this way
+    delay(5);
+  }
+
+  // Get the average sensor value (ignore the fraction).
+  adcValue = round(adcValue / numberOfSamples);
+  // determine de actual voltage by multiplying the raw value to a known calibration factor
+  voltage = adcValue * VOLTAGE_CALIBRATION_FACTOR;
+
+  Serial.println(voltage);
+}
 
 /**
  * Send alerts using Blynk
@@ -377,20 +441,24 @@ void sendAlerts()
   bool hasAlert = false;
 
   // no notification if the state is not changed
-  if (prevEnvStatus == envStatus && batteryStatus == prevBatteryStatus) {
+  if (prevEnvStatus == envStatus && batteryStatus == prevBatteryStatus)
+  {
     return;
   }
-  
+
   // todo: send this alert only once if conditions go away but not more than 10 times a day
-  if (prevEnvStatus != envStatus && envStatus == STATUS_DANGER) {
+  if (prevEnvStatus != envStatus && envStatus == STATUS_DANGER)
+  {
     hasAlert = true;
   }
 
-  if (batteryStatus != prevBatteryStatus && (batteryStatus == STATUS_DISCHARGED || batteryStatus == STATUS_OVERVOLTAGE || batteryStatus == STATUS_DISCONNECTED)) {
-   hasAlert = true;
+  if (batteryStatus != prevBatteryStatus && (batteryStatus == STATUS_DISCHARGED || batteryStatus == STATUS_OVERVOLTAGE || batteryStatus == STATUS_DISCONNECTED))
+  {
+    hasAlert = true;
   }
-  
-  if (hasAlert) {
+
+  if (hasAlert)
+  {
     Blynk.email("SolarBox Alert", statusText);
     char buff[50];
     sprintf(buff, "SolarBox Alert: %s", statusText);
@@ -400,11 +468,13 @@ void sendAlerts()
   // write the changed values to the appropriate address of the EEPROM.
   // these values will remain there when the board is turned off.
   addr = 0;
-  if (prevEnvStatus != envStatus) {
+  if (prevEnvStatus != envStatus)
+  {
     EEPROM.write(addr, envStatus);
   }
 
-  if (batteryStatus != prevBatteryStatus) {
+  if (batteryStatus != prevBatteryStatus)
+  {
     EEPROM.write(++addr, batteryStatus);
   }
   EEPROM.commit();
@@ -428,65 +498,76 @@ void sendAlerts()
  */
 void logToBlynk()
 {
-  Blynk.run();
+  if (!Blynk.connected())
+  {
+    return;
+  }
+
   Blynk.virtualWrite(0, round(temp * 10) / 10.0); // round to one decimal
-  Blynk.virtualWrite(1, round(humidity));
-  
-  switch (envStatus) {
-    case STATUS_NOTICE:
-      ledWeather.setColor(COLOR_YELLOW);
-      break;    
-    case STATUS_WARNING:
-      ledWeather.setColor(COLOR_ORANGE);
-      break;
-    case STATUS_DANGER:
-      ledWeather.setColor(COLOR_RED);
-      break;
-    default:
-      ledWeather.setColor(COLOR_GREEN);
-      
+  Blynk.virtualWrite(1, round(humidity * 10) / 10.0);
+
+  switch (envStatus)
+  {
+  case STATUS_NOTICE:
+    ledWeather.setColor(COLOR_YELLOW);
+    break;
+  case STATUS_WARNING:
+    ledWeather.setColor(COLOR_ORANGE);
+    break;
+  case STATUS_DANGER:
+    ledWeather.setColor(COLOR_RED);
+    break;
+  default:
+    ledWeather.setColor(COLOR_GREEN);
   }
   ledWeather.on();
 
-  switch (batteryStatus) {
-    case STATUS_DISCONNECTED:
-      ledBattery.setColor(COLOR_GREY);
-      break;
-    case STATUS_OVERVOLTAGE:
-    case STATUS_DISCHARGED:
-      ledBattery.setColor(COLOR_RED);
-      break;
-    case STATUS_EQUALIZE:
-      ledBattery.setColor(COLOR_ORANGE);
-      break;
-    case STATUS_BOOST:
-      ledBattery.setColor(COLOR_YELLOW);
-      break;
-    case STATUS_FLOAT:
-      ledBattery.setColor(COLOR_BLUE);
-      break;     
-    default:
-      ledBattery.setColor(COLOR_GREEN);
-      
+  switch (batteryStatus)
+  {
+  case STATUS_DISCONNECTED:
+    ledBattery.setColor(COLOR_GREY);
+    break;
+  case STATUS_OVERVOLTAGE:
+  case STATUS_DISCHARGED:
+    ledBattery.setColor(COLOR_RED);
+    break;
+  case STATUS_EQUALIZE:
+    ledBattery.setColor(COLOR_ORANGE);
+    break;
+  case STATUS_BOOST:
+    ledBattery.setColor(COLOR_YELLOW);
+    break;
+  case STATUS_FLOAT:
+    ledBattery.setColor(COLOR_BLUE);
+    break;
+  default:
+    ledBattery.setColor(COLOR_GREEN);
   }
 
-  if (isDayTime) {
-    if (isSoilDry) {
+  if (isDayTime)
+  {
+    if (isSoilDry)
+    {
       ledSoil.setColor(COLOR_ORANGE);
-    } else {
+    }
+    else
+    {
       ledSoil.setColor(COLOR_BLUE);
     }
-  } else {
+  }
+  else
+  {
     ledSoil.setColor(COLOR_GREY);
   }
 
   ledSoil.on();
   ledBattery.on();
-  
+
   Blynk.virtualWrite(3, statusText);
   Blynk.virtualWrite(4, voltage);
   Blynk.virtualWrite(6, batteryStatusText);
   Blynk.virtualWrite(7, chargeLevel);
+  Blynk.run();
 }
 
 //---------------------------------------------------------------
@@ -494,19 +575,23 @@ void logToBlynk()
 void goToSleep()
 {
   unsigned short seconds;
-  
-  if (envStatus == STATUS_DANGER || batteryStatus == STATUS_OVERVOLTAGE) {
+
+  if (envStatus == STATUS_DANGER || batteryStatus == STATUS_OVERVOLTAGE)
+  {
     // 30 sec sleep if danger
     seconds = 30;
-  } else if (envStatus != STATUS_DANGER && (voltage > 12.3 && voltage < 13)) {
+  }
+  else if (envStatus != STATUS_DANGER && (voltage > 12.3 && voltage < 13))
+  {
     // 3 mins sleep at night if nothing happens
     seconds = 180;
-  } else {
+  }
+  else
+  {
     // normal 1 min sleep
     seconds = 60;
   }
   ESP.deepSleep(seconds * 1000000);
-  yield();
 }
 
 //---------------------------------------------------------------
@@ -530,4 +615,3 @@ void debugInfo()
   Serial.println(voltage);
   Serial.printf("SoC: %d\n", chargeLevel);
 }
-
